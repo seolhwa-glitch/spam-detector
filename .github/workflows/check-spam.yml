@@ -1,0 +1,38 @@
+name: 스팸 감지
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 확인한 글 목록 복원
+        uses: actions/cache@v4
+        with:
+          path: seen_posts.json
+          key: seen-posts-${{ github.run_id }}
+          restore-keys: seen-posts-
+
+      - name: 스팸 감지 실행
+        run: python main.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: 확인 목록 저장
+        run: |
+          git config user.name "spam-detector-bot"
+          git config user.email "bot@noreply.github.com"
+          git add seen_posts.json || true
+          git diff --staged --quiet || git commit -m "update seen posts [skip ci]"
+          git push || true
