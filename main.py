@@ -64,9 +64,12 @@ class PostParser(HTMLParser):
             if self._current_href and text:
                 match = re.search(r"/post/(\d+)", self._current_href)
                 if match:
+                    # 첫 번째 텍스트 조각 = 제목, 전체 = LLM 판별용
+                    title = self._current_text[0].strip() if self._current_text else text
                     self.posts.append({
                         "id": match.group(1),
                         "url": f"{BASE_URL}/post/{match.group(1)}",
+                        "title": title,
                         "text": text,
                     })
             self._in_post_link = False
@@ -188,30 +191,36 @@ def send_slack_alert(post: dict, reason: str):
     """스팸으로 판별된 글을 Slack으로 알림합니다."""
     preview = post["text"][:200] + ("..." if len(post["text"]) > 200 else "")
     community = post.get("community", "알 수 없음")
+    title = post.get("title", "")
 
     message = {
         "blocks": [
             {
                 "type": "header",
-                "text": {"type": "plain_text", "text": "🚨 사주/운세 스팸 감지"},
+                "text": {"type": "plain_text", "text": "🚨 사주 빌런 출몰"},
             },
             {
                 "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*커뮤니티:*\n{community}"},
-                    {"type": "mrkdwn", "text": f"*판별 사유:*\n{reason}"},
-                ],
+                "text": {"type": "mrkdwn", "text": f"*커뮤니티:*  {community}"},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*글 제목:*  {title}"},
             },
             {
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": f"*글 내용 미리보기:*\n{preview}"},
             },
             {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*판별 사유:*  {reason}"},
+            },
+            {
                 "type": "actions",
                 "elements": [
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "📄 글 확인하기"},
+                        "text": {"type": "plain_text", "text": "🔗 바로가기"},
                         "url": post["url"],
                     }
                 ],
