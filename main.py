@@ -281,7 +281,6 @@ def main():
     # 각 새 글에 대해 스팸 판별
     spam_count = 0
     for post in new_posts:
-        seen.add(post["id"])
         community = post.get("community", "")
         print(f"\n  🔎 [{community}] 검사 중: {post['text'][:50]}...")
 
@@ -289,11 +288,15 @@ def main():
             result = check_spam_with_llm(post["text"])
             print(f"     결과: is_spam={result['is_spam']}, reason={result['reason']}")
 
+            # 검사 성공한 글만 "확인 완료" 처리
+            seen.add(post["id"])
+
             if result["is_spam"]:
                 spam_count += 1
                 send_slack_alert(post, result["reason"])
         except Exception as e:
-            print(f"     ⚠️ 판별 오류: {e}")
+            # 검사 실패한 글은 seen에 추가하지 않음 → 다음 실행에서 재시도
+            print(f"     ⚠️ 판별 오류 (다음 실행에서 재시도): {e}")
 
     save_seen_posts(seen)
     print(f"\n✅ 완료! 새 글 {len(new_posts)}개 중 스팸 {spam_count}개 감지")
