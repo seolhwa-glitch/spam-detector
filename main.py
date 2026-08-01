@@ -1,7 +1,8 @@
 """
 리멤버 커뮤니티 스팸 감지기
 - 관심사 커뮤니티 11개의 최신글을 확인하고,
-  LLM(Gemini)으로 사주/운세 스팸을 판별한 뒤, Slack으로 알림을 보냅니다.
+  키워드 기반으로 사주/운세 스팸을 판별한 뒤, Slack으로 알림을 보냅니다.
+- LLM API 불필요 (무료, 무제한)
 """
 
 import os
@@ -16,11 +17,9 @@ from html.parser import HTMLParser
 # 설정
 # ─────────────────────────────────────────────
 BASE_URL = "https://community.rememberapp.co.kr"
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 SEEN_FILE = "seen_posts.json"
 
-# 관심사 커뮤니티 목록 (ID: 이름)
 INTEREST_COMMUNITIES = {
     61: "회사생활",
     80: "이슈토론",
@@ -64,7 +63,6 @@ class PostParser(HTMLParser):
             if self._current_href and text:
                 match = re.search(r"/post/(\d+)", self._current_href)
                 if match:
-                    # 첫 번째 텍스트 조각 = 제목, 전체 = LLM 판별용
                     title = self._current_text[0].strip() if self._current_text else text
                     self.posts.append({
                         "id": match.group(1),
@@ -75,7 +73,6 @@ class PostParser(HTMLParser):
             self._in_post_link = False
 
     def handle_data(self, data):
-        # "최신글" 또는 "새글피드" 텍스트를 만나면 이후부터 글을 수집
         if "최신글" in data or "새글피드" in data:
             self._in_feed = True
         if self._in_post_link:
@@ -83,10 +80,8 @@ class PostParser(HTMLParser):
 
 
 def fetch_community_posts(community_id: int, community_name: str) -> list[dict]:
-    """특정 관심사 커뮤니티의 최신글을 가져옵니다."""
     url = f"{BASE_URL}/community/{community_id}"
     req = urllib.request.Request(url, headers={"User-Agent": "SpamDetector/1.0"})
-
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             html = resp.read().decode("utf-8")
@@ -97,7 +92,6 @@ def fetch_community_posts(community_id: int, community_name: str) -> list[dict]:
     parser = PostParser()
     parser.feed(html)
 
-    # 중복 제거 & 커뮤니티 이름 추가
     seen = set()
     unique = []
     for p in parser.posts:
@@ -109,10 +103,8 @@ def fetch_community_posts(community_id: int, community_name: str) -> list[dict]:
 
 
 def fetch_all_posts() -> list[dict]:
-    """모든 관심사 커뮤니티의 최신글을 수집합니다."""
     all_posts = []
     seen_ids = set()
-
     for cid, cname in INTEREST_COMMUNITIES.items():
         posts = fetch_community_posts(cid, cname)
         count = 0
@@ -122,73 +114,128 @@ def fetch_all_posts() -> list[dict]:
                 all_posts.append(p)
                 count += 1
         print(f"    📥 [{cname}] {count}개 수집")
-        time.sleep(0.5)  # 서버 부담 줄이기
-
+        time.sleep(0.5)
     return all_posts
 
 
 # ─────────────────────────────────────────────
-# 2단계: LLM으로 스팸 판별
+# 2단계: 키워드 기반 스팸 판별
 # ─────────────────────────────────────────────
-SPAM_DETECTION_PROMPT = """당신은 온라인 커뮤니티의 스팸 게시글 탐지 전문가입니다.
-
-아래 게시글이 **사주·운세·점술·타로·신점·궁합 관련 홍보/스팸**인지 판별해 주세요.
-
-## 주의사항
-- 스패머는 탐지를 피하기 위해 의도적으로 단어를 변형합니다.
-  예: "운세" → "운. 세", "운 세", "운·세", "ㅇㅅ" 등
-  예: "사주" → "사. 주", "四柱", "saju" 등
-- "올해의 흐름", "타고난 기운", "앞날을 봐드립니다" 등 우회 표현도 포함됩니다.
-- 댓글로 카카오톡 오픈채팅 링크를 유도하는 경우가 많습니다.
-- "몇 명 봐드립니다", "댓글 주시면 답 드립니다" 같은 무료 상담 유도 패턴에 주목하세요.
-
-## 판별 기준
-- 사주/운세/점술 관련 내용이면서 홍보·상담유도 성격이면 → 스팸
-- 단순히 운세 이야기를 하는 일반 대화(예: "오늘 운세 봤는데 웃기더라")는 → 스팸 아님
-
-## 응답 형식
-반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트는 절대 포함하지 마세요.
-{"is_spam": true 또는 false, "reason": "판단 근거를 한 줄로"}
-
-## 게시글
-{post_text}
-"""
-
-
-def check_spam_with_llm(post_text: str) -> dict:
-    """Gemini API를 호출하여 스팸 여부를 판별합니다."""
-    prompt = SPAM_DETECTION_PROMPT.replace("{post_text}", post_text)
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+def normalize_text(text: str) -> str:
+    """스패머의 글자 분리 트릭을 무력화합니다.
+    "운. 세" → "운세", "사 . 주" → "사주" 등"""
+    # 한글 글자 사이의 특수문자/공백 제거
+    # 예: 운. 세 → 운세, 사 주 → 사주, 타·로 → 타로
+    normalized = re.sub(
+        r'([가-힣])\s*[.\·\-_~,;:!?\s]+\s*([가-힣])',
+        r'\1\2',
+        text
     )
+    # 여러 번 반복 (3글자 이상 분리된 경우 대비: 운. 세. 보. 기)
+    for _ in range(3):
+        normalized = re.sub(
+            r'([가-힣])\s*[.\·\-_~,;:!?\s]+\s*([가-힣])',
+            r'\1\2',
+            normalized
+        )
+    return normalized
 
-    payload = json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 256},
-    }).encode("utf-8")
 
-    req = urllib.request.Request(
-        url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+# 사주/운세/점술 관련 키워드
+FORTUNE_KEYWORDS = [
+    "운세", "사주", "타로", "신점", "궁합", "점술", "점괘",
+    "관상", "손금", "작명", "역학", "명리", "풍수",
+    "四柱", "ㅇㅅ", "ㅅㅈ",
+    "올해의흐름", "타고난기운", "앞날을봐",
+    "연애운", "이성운", "재물운", "이직운", "취업운", "결혼운", "시험운",
+    "올해운", "내년운", "금전운",
+]
 
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+# 상담 유도 / 홍보 패턴
+SOLICITATION_PATTERNS = [
+    r"\d+\s*명.*봐드",          # "5명 봐드릴게요", "열 명 봐드립니다"
+    r"봐드릴[게께겠]",           # "봐드릴게요", "봐드릴께요"
+    r"봐드립니다",
+    r"봐드려요",
+    r"풀어[드볼]",              # "풀어드릴게요", "풀어볼게요"
+    r"댓글.*[주남달]",          # "댓글 주시면", "댓글 남겨주세요", "댓글 달아주세요"
+    r"오픈\s*채팅",
+    r"카[카톡].*링크",
+    r"DM\s*주",
+    r"무료.*상담",
+    r"상담.*무료",
+]
 
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    text = re.sub(r"```json\s*|```", "", text).strip()
-    return json.loads(text)
+# 이 패턴만으로도 스팸 확정 (운세 키워드 없어도)
+STANDALONE_SPAM_PATTERNS = [
+    r"\d+\s*명\s*(만|정도|정두)?\s*봐드",     # "5명 봐드릴게요", "5명만 봐드려요", "5명 정두 봐드려요"
+    r"(몇|몇몇)\s*(명|분)\s*(만)?\s*봐드",    # "몇 분만 봐드릴게여", "몇명 봐드려요"
+    r"(가볍게|간단히|간단하게).*봐드",          # "가볍게 봐드릴게요", "간단히 봐드려요"
+    r"도움.*필요.*봐드",                       # "도움 필요하신분? 봐드릴게여"
+]
+
+# 일반 대화 제외 패턴 (이게 있으면 스팸이 아닌 것으로 판단)
+EXCLUDE_PATTERNS = [
+    r"운세.*봤[는더]",          # "운세 봤는데", "운세 봤더니"
+    r"운세.*믿",               # "운세 믿으세요?"
+    r"사주.*받았",             # "사주 받았는데"
+    r"타로.*갔",               # "타로 갔다왔는데"
+]
+
+
+def check_spam_keyword(text: str) -> dict:
+    """키워드 기반으로 사주/운세 스팸 여부를 판별합니다."""
+    normalized = normalize_text(text)
+    combined = text + " " + normalized  # 원본 + 정규화 텍스트 모두 검사
+
+    # 제외 패턴 먼저 체크 (일반 대화)
+    for pattern in EXCLUDE_PATTERNS:
+        if re.search(pattern, combined):
+            return {"is_spam": False, "reason": "일반 대화로 판단"}
+
+    # 단독 스팸 패턴 체크 ("N명 봐드릴게요" 류 — 운세 키워드 없어도 스팸)
+    for pattern in STANDALONE_SPAM_PATTERNS:
+        if re.search(pattern, combined):
+            return {
+                "is_spam": True,
+                "reason": "상담 유도 패턴 감지 (N명 봐드릴게요 류)",
+            }
+
+    # 사주/운세 키워드 매칭
+    found_keywords = []
+    for keyword in FORTUNE_KEYWORDS:
+        if keyword in combined:
+            found_keywords.append(keyword)
+
+    # 상담 유도 패턴 매칭
+    found_solicitations = []
+    for pattern in SOLICITATION_PATTERNS:
+        if re.search(pattern, combined):
+            found_solicitations.append(pattern)
+
+    # 판별: 운세 키워드 + 유도 패턴 둘 다 있으면 스팸
+    if found_keywords and found_solicitations:
+        keyword_str = ", ".join(found_keywords[:3])
+        return {
+            "is_spam": True,
+            "reason": f"키워드 감지: [{keyword_str}] + 상담 유도 패턴",
+        }
+
+    # 운세 키워드만 2개 이상이면 의심 스팸
+    if len(found_keywords) >= 2:
+        keyword_str = ", ".join(found_keywords[:3])
+        return {
+            "is_spam": True,
+            "reason": f"복수 키워드 감지: [{keyword_str}]",
+        }
+
+    return {"is_spam": False, "reason": "스팸 패턴 미감지"}
 
 
 # ─────────────────────────────────────────────
 # 3단계: Slack 알림 보내기
 # ─────────────────────────────────────────────
 def send_slack_alert(post: dict, reason: str):
-    """스팸으로 판별된 글을 Slack으로 알림합니다."""
     preview = post["text"][:200] + ("..." if len(post["text"]) > 200 else "")
     community = post.get("community", "알 수 없음")
     title = post.get("title", "")
@@ -260,16 +307,15 @@ def save_seen_posts(seen: set):
 # ─────────────────────────────────────────────
 def main():
     print("🔍 리멤버 커뮤니티 스팸 감지 시작...")
-    print(f"  📌 검사 대상: 관심사 커뮤니티 {len(INTEREST_COMMUNITIES)}개\n")
+    print(f"  📌 검사 대상: 관심사 커뮤니티 {len(INTEREST_COMMUNITIES)}개")
+    print(f"  📌 검사 방식: 키워드 기반 (API 불필요)\n")
 
     seen = load_seen_posts()
     print(f"  📋 기존에 확인한 글: {len(seen)}개\n")
 
-    # 모든 관심사 커뮤니티에서 글 수집
     all_posts = fetch_all_posts()
     print(f"\n  📊 총 수집: {len(all_posts)}개")
 
-    # 새 글만 필터링
     new_posts = [p for p in all_posts if p["id"] not in seen]
     print(f"  🆕 새 글: {len(new_posts)}개")
 
@@ -278,25 +324,22 @@ def main():
         save_seen_posts(seen)
         return
 
-    # 각 새 글에 대해 스팸 판별
     spam_count = 0
     for post in new_posts:
         community = post.get("community", "")
-        print(f"\n  🔎 [{community}] 검사 중: {post['text'][:50]}...")
+        result = check_spam_keyword(post["text"])
 
-        try:
-            result = check_spam_with_llm(post["text"])
-            print(f"     결과: is_spam={result['is_spam']}, reason={result['reason']}")
-
-            # 검사 성공한 글만 "확인 완료" 처리
-            seen.add(post["id"])
-
-            if result["is_spam"]:
-                spam_count += 1
+        if result["is_spam"]:
+            spam_count += 1
+            print(f"\n  🚨 [{community}] 스팸 감지: {post['text'][:50]}...")
+            print(f"     사유: {result['reason']}")
+            try:
                 send_slack_alert(post, result["reason"])
-        except Exception as e:
-            # 검사 실패한 글은 seen에 추가하지 않음 → 다음 실행에서 재시도
-            print(f"     ⚠️ 판별 오류 (다음 실행에서 재시도): {e}")
+            except Exception as e:
+                print(f"     ⚠️ 슬랙 전송 오류: {e}")
+
+        # 키워드 방식은 실패할 일이 없으므로 바로 확인 완료 처리
+        seen.add(post["id"])
 
     save_seen_posts(seen)
     print(f"\n✅ 완료! 새 글 {len(new_posts)}개 중 스팸 {spam_count}개 감지")
