@@ -63,20 +63,66 @@ class PostParser(HTMLParser):
             if self._current_href and text:
                 match = re.search(r"/post/(\d+)", self._current_href)
                 if match:
-                    title = self._current_text[0].strip() if self._current_text else text
-                    self.posts.append({
-                        "id": match.group(1),
-                        "url": f"{BASE_URL}/post/{match.group(1)}",
-                        "title": title,
-                        "text": text,
-                    })
+                    parsed = self._parse_post_parts(self._current_text, text)
+                    parsed["id"] = match.group(1)
+                    parsed["url"] = f"{BASE_URL}/post/{match.group(1)}"
+                    self.posts.append(parsed)
             self._in_post_link = False
 
     def handle_data(self, data):
         if "최신글" in data or "새글피드" in data:
             self._in_feed = True
         if self._in_post_link:
-            self._current_text.append(data.strip())
+            stripped = data.strip()
+            if stripped:
+                self._current_text.append(stripped)
+
+    @staticmethod
+    def _parse_post_parts(parts, full_text):
+        """텍스트 조각들을 제목/본문/메타데이터로 분리합니다."""
+        title = parts[0] if parts else full_text
+        author = ""
+        time_str = ""
+        views = ""
+        likes = ""
+        comments = ""
+        body = full_text
+
+        # 끝에서부터 메타데이터 추출 시도
+        # 패턴: ... 닉네임 시간표현 조회수 좋아요 댓글수
+        # "조회수", "좋아요", "댓글" 라벨 텍스트를 제거하면서 숫자만 추출
+        meta_re = re.compile(
+            r'^(.*?)\s+'
+            r'(\S+)\s+'
+            r'(방금|\d+분\s*전|\d+시간\s*전|\d+일\s*전|\d{1,2}월\s*\d{1,2}일)'
+            r'\s*(?:조회수)*\s*(\d[\d,]*)'
+            r'\s*(?:좋아요)*\s*(\d[\d,]*)'
+            r'\s*(?:댓글)*\s*(\d[\d,]*)\s*$',
+            re.DOTALL
+        )
+        m = meta_re.match(full_text)
+        if m:
+            body = m.group(1).strip()
+            author = m.group(2)
+            time_str = m.group(3)
+            views = m.group(4)
+            likes = m.group(5)
+            comments = m.group(6)
+
+        # 본문에서 제목 중복 제거
+        if body.startswith(title) and len(body) > len(title):
+            body = body[len(title):].strip()
+
+        return {
+            "title": title,
+            "body": body,
+            "text": full_text,    # 전체 텍스트 (스팸 판별용)
+            "author": author,
+            "time": time_str,
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+        }
 
 
 def fetch_community_posts(community_id: int, community_name: str) -> list[dict]:
@@ -236,31 +282,45 @@ def check_spam_keyword(text: str) -> dict:
 # 3단계: Slack 알림 보내기
 # ─────────────────────────────────────────────
 def send_slack_alert(post: dict, reason: str):
-    preview = post["text"][:200] + ("..." if len(post["text"]) > 200 else "")
     community = post.get("community", "알 수 없음")
     title = post.get("title", "")
+    body = post.get("body", "")
+    author = post.get("author", "")
+    views = post.get("views", "0")
+    likes = post.get("likes", "0")
+    comments = post.get("comments", "0")
+
+    preview = body[:200] + ("..." if len(body) > 200 else "") if body else "(본문 없음)"
 
     message = {
         "blocks": [
             {
                 "type": "header",
-                "text": {"type": "plain_text", "text": "🚨 사주 빌런 출몰"},
+                "text": {"type": "plain_text", "text": "🚨사주 빌런 출몰🚨"},
             },
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*커뮤니티:*  {community}"},
+                "text": {"type": "mrkdwn", "text": f"*커뮤니티 :*  {community}"},
             },
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*글 제목:*  {title}"},
+                "text": {"type": "mrkdwn", "text": f"*제목 :*  {title}"},
             },
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*글 내용 미리보기:*\n{preview}"},
+                "text": {"type": "mrkdwn", "text": f"*내용 :*\n{preview}"},
             },
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*판별 사유:*  {reason}"},
+                "text": {"type": "mrkdwn", "text": f"*작성자 :*  {author}"},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*조회 | 좋아요 | 댓글수 :*  {views} | {likes} | {comments}"},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*판별 사유 :*  {reason}"},
             },
             {
                 "type": "actions",
