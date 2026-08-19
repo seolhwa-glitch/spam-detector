@@ -39,8 +39,6 @@ INTEREST_COMMUNITIES = {
 # 1단계: 커뮤니티 페이지에서 글 목록 가져오기
 # ─────────────────────────────────────────────
 class PostParser(HTMLParser):
-    """HTML에서 '최신글' 영역의 게시글을 추출하는 파서"""
-
     def __init__(self):
         super().__init__()
         self.posts = []
@@ -79,7 +77,6 @@ class PostParser(HTMLParser):
 
     @staticmethod
     def _parse_post_parts(parts, full_text):
-        """텍스트 조각들을 제목/본문/메타데이터로 분리합니다."""
         title = parts[0] if parts else full_text
         author = ""
         time_str = ""
@@ -88,9 +85,6 @@ class PostParser(HTMLParser):
         comments = ""
         body = full_text
 
-        # 끝에서부터 메타데이터 추출 시도
-        # 패턴: ... 닉네임 시간표현 조회수 좋아요 댓글수
-        # "조회수", "좋아요", "댓글" 라벨 텍스트를 제거하면서 숫자만 추출
         meta_re = re.compile(
             r'^(.*?)\s+'
             r'(\S+)\s+'
@@ -109,14 +103,13 @@ class PostParser(HTMLParser):
             likes = m.group(5)
             comments = m.group(6)
 
-        # 본문에서 제목 중복 제거
         if body.startswith(title) and len(body) > len(title):
             body = body[len(title):].strip()
 
         return {
             "title": title,
             "body": body,
-            "text": full_text,    # 전체 텍스트 (스팸 판별용)
+            "text": full_text, 
             "author": author,
             "time": time_str,
             "views": views,
@@ -165,18 +158,14 @@ def fetch_all_posts() -> list[dict]:
 
 
 # ─────────────────────────────────────────────
-# 2단계: 키워드 기반 스팸 판별
+# 2단계: 키워드 기반 스팸 판별 (LLM급 포괄 탐지)
 # ─────────────────────────────────────────────
 def normalize_text(text: str) -> str:
-    """스패머의 글자 분리 트릭을 무력화합니다.
-    "운. 세" → "운세", "사 . 주" → "사주" 등"""
-    # 한글 글자 사이의 특수문자/공백 제거
     normalized = re.sub(
         r'([가-힣])\s*[.\·\-_~,;:!?/\\|+\s]+\s*([가-힣])',
         r'\1\2',
         text
     )
-    # 여러 번 반복 (3글자 이상 분리된 경우 대비)
     for _ in range(3):
         normalized = re.sub(
             r'([가-힣])\s*[.\·\-_~,;:!?/\\|+\s]+\s*([가-힣])',
@@ -186,7 +175,7 @@ def normalize_text(text: str) -> str:
     return normalized
 
 
-# 사주/운세/점술 관련 키워드 (띄어쓰기 꼼수, 신규 키워드 추가)
+# 확장된 포괄적 키워드 (오탐지를 감수하고 넓게 잡음)
 FORTUNE_KEYWORDS = [
     "운세", "사주", "타로", "신점", "궁합", "점술", "점괘",
     "관상", "손금", "작명", "역학", "명리", "풍수",
@@ -194,13 +183,14 @@ FORTUNE_KEYWORDS = [
     "올해의흐름", "타고난기운", "앞날을봐",
     "연애운", "이성운", "재물운", "이직운", "취업운", "결혼운", "시험운",
     "올해운", "내년운", "금전운",
-    "운 흐름", "올해의 운", "기운", "고민거리", "방향성", "시기", # 추가됨
+    "운 흐름", "올해의 운", "기운", "고민거리", "방향성", "시기", 
+    "운의 흐름", "운명", "생년월일", "풀이", "사주풀이", "운명풀이", "해석"
 ]
 
-# 상담 유도 / 홍보 패턴
+# 상담 유도 / 홍보 패턴 확장 (오픈카톡 다이렉트 링크 포함)
 SOLICITATION_PATTERNS = [
     r"\d+\s*명.*봐드",         
-    r"봐\s*드",                 
+    r"봐\s*[드볼줄줍]",                 
     r"보\s*[ㅏ-ㅣ]\s*드",       
     r"풀어[드볼]",              
     r"풀이",                    
@@ -208,6 +198,7 @@ SOLICITATION_PATTERNS = [
     r"댓\s*글",                 
     r"오픈\s*채팅",
     r"카[카톡].*링크",
+    r"open\.kakao\.com",        # 추가: 다이렉트 오픈카톡 링크
     r"DM\s*주",
     r"무료.*상담",
     r"상담.*무료",
@@ -216,28 +207,27 @@ SOLICITATION_PATTERNS = [
     r"보고\s*가",               
     r"봐\s*가",                 
     r"보[고러]\s*[가와오]",      
-    r"봐[볼줄]",                
-    r"봐\s*줄",                 
     r"알려\s*드",               
     r"상담\s*[해드]",           
     r"연락\s*[주줘]",           
-    r"해석\s*[해드볼줄]",       # 추가됨 (해석해드려요 등)
+    r"해석\s*[해\s]*[드볼줄줍]", # 추가: 해석해줍니다, 해석드려요 방어
+    r"확인\s*[해\s]*[드볼줄줍보]", # 추가: 확인해드려요, 확인해보세요 방어
+    r"분석\s*가능",             # 추가: 진지하게 분석 가능
 ]
 
-# 한글 숫자 표현
 _NUM = r"(\d+|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)"
 
-# 이 패턴만으로도 스팸 확정 (운세 키워드 없어도)
+# 단독 스팸 패턴 (운세 키워드가 아예 없어도 무조건 차단)
 STANDALONE_SPAM_PATTERNS = [
-    _NUM + r"\s*(명|분)\s*(만|정도|정두)?\s*봐\s*드",
+    _NUM + r"\s*(명|분)\s*(만|정도|정두)?\s*봐\s*[드볼줄줍]",
     _NUM + r"\s*(명|분)\s*(만|정도|정두)?\s*보\s*[ㅏ-ㅣ]\s*드", 
-    r"(몇|몇몇)\s*(명|분)\s*(만)?\s*봐\s*드",
-    r"(몇|몇몇)\s*(명|분)\s*(만)?\s*보\s*[ㅏ-ㅣ]\s*드",         
+    r"(몇|몇몇)\s*(명|분)(들)?\s*(만)?\s*봐\s*[드볼줄줍]",         # 추가: 몇몇 분들만 봐드립니다
+    r"(몇|몇몇)\s*(명|분)(들)?\s*(만)?\s*보\s*[ㅏ-ㅣ]\s*드",         
     _NUM + r"\s*(명|분)\s*(만|정도|정두)?\s*봐[볼줄]",
     _NUM + r"\s*(명|분)\s*(만|정도|정두)?\s*보[고러]",
-    r"(몇|몇몇)\s*(명|분)\s*(만)?\s*봐[볼줄]",
-    r"(몇|몇몇)\s*(명|분)\s*(만)?\s*보[고러]",
-    r"(가볍게|간단히|간단하게).*봐\s*드",
+    r"(몇|몇몇)\s*(명|분)(들)?\s*(만)?\s*봐[볼줄]",
+    r"(몇|몇몇)\s*(명|분)(들)?\s*(만)?\s*보[고러]",
+    r"(가볍게|간단히|간단하게).*봐\s*[드볼줄줍]",
     r"(가볍게|간단히|간단하게).*보\s*[ㅏ-ㅣ]\s*드",              
     r"(가볍게|간단히|간단하게).*봐[볼줄]",
     r"(가볍게|간단히|간단하게).*보[고러]",
@@ -247,62 +237,55 @@ STANDALONE_SPAM_PATTERNS = [
     r"\d+\s*명\s*(만|만요)?\s*$",
     r"도움.*필요.*봐",
     
-    # 추가됨: 4-5명, 3~4분 등 인원수 범위 표현 단독 등장 시
-    r"\d+\s*[-~,/]\s*\d+\s*(명|분)", 
+    r"\d+\s*[-~,/]\s*\d+\s*(명|분)", # 추가: 5/6명, 4-5명 등 범위 표현
     
-    # 추가됨: 가짜 후기/질문형 밑밥 패턴
     r"(잘\s*맞나요|잘\s*맞더라고요|잘\s*맞네).*(어디|추천|알려)",
     r"(운세|사주|타로|점).*잘\s*보는\s*곳",
+    
+    # 신규 대폭 확장: '취미 가장형' 및 '단순 링크 투척형' 스팸 방어
+    r"취미로.*(제작|만들|봐|분석|풀이|해석|운)", 
+    r"(해석|풀이|분석|상담|고민).*(open\.kakao\.com|카카오톡|오픈채팅|오픈카톡)"
 ]
 
-# 일반 대화 제외 패턴 (스패머 악용 패턴 주석 처리)
+# 스패머가 악용하는 일반대화 제외 패턴 비활성화 유지
 EXCLUDE_PATTERNS = [
-    # r"운세.*봤[는더]",          # 스패머가 밑밥용으로 악용하므로 제거
-    # r"운세.*믿",                # 스패머가 밑밥용으로 악용하므로 제거
     r"사주.*받았",              
     r"타로.*갔",                
 ]
 
 
 def check_spam_keyword(text: str) -> dict:
-    """키워드 기반으로 사주/운세 스팸 여부를 판별합니다."""
     normalized = normalize_text(text)
-    combined = text + " " + normalized  # 원본 + 정규화 텍스트 모두 검사
+    combined = text + " " + normalized
 
-    # 제외 패턴 먼저 체크 (일반 대화)
     for pattern in EXCLUDE_PATTERNS:
         if re.search(pattern, combined):
             return {"is_spam": False, "reason": "일반 대화로 판단"}
 
-    # 단독 스팸 패턴 체크 ("N명 봐드릴게요" 류 — 운세 키워드 없어도 스팸)
     for pattern in STANDALONE_SPAM_PATTERNS:
         if re.search(pattern, combined):
             return {
                 "is_spam": True,
-                "reason": "상담 유도 패턴 감지 (N명 봐드릴게요 류)",
+                "reason": "단독 스팸 패턴 감지 (취미 가장형, 인원수 제한 등)",
             }
 
-    # 사주/운세 키워드 매칭
     found_keywords = []
     for keyword in FORTUNE_KEYWORDS:
         if keyword in combined:
             found_keywords.append(keyword)
 
-    # 상담 유도 패턴 매칭
     found_solicitations = []
     for pattern in SOLICITATION_PATTERNS:
         if re.search(pattern, combined):
             found_solicitations.append(pattern)
 
-    # 판별: 운세 키워드 + 유도 패턴 둘 다 있으면 스팸
     if found_keywords and found_solicitations:
         keyword_str = ", ".join(found_keywords[:3])
         return {
             "is_spam": True,
-            "reason": f"키워드 감지: [{keyword_str}] + 상담 유도 패턴",
+            "reason": f"키워드 감지: [{keyword_str}] + 상담 유도(또는 링크)",
         }
 
-    # 운세 키워드만 2개 이상이면 의심 스팸
     if len(found_keywords) >= 2:
         keyword_str = ", ".join(found_keywords[:3])
         return {
@@ -403,7 +386,7 @@ def save_seen_posts(seen: set):
 def main():
     print("🔍 리멤버 커뮤니티 스팸 감지 시작...")
     print(f"  📌 검사 대상: 관심사 커뮤니티 {len(INTEREST_COMMUNITIES)}개")
-    print(f"  📌 검사 방식: 키워드 기반 (API 불필요)\n")
+    print(f"  📌 검사 방식: 확장형 정규식 (LLM급 포괄 매칭)\n")
 
     seen = load_seen_posts()
     print(f"  📋 기존에 확인한 글: {len(seen)}개\n")
@@ -433,7 +416,6 @@ def main():
             except Exception as e:
                 print(f"    ⚠️ 슬랙 전송 오류: {e}")
 
-        # 키워드 방식은 실패할 일이 없으므로 바로 확인 완료 처리
         seen.add(post["id"])
 
     save_seen_posts(seen)
