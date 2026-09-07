@@ -415,8 +415,8 @@ def main():
             p["_check_type"] = "수정됨"
             posts_to_check.append(p)
 
-    # ── 안전장치: 한꺼번에 50개 이상이면 비정상 (커뮤니티 추가/코드 변경 등) → 자동 시드 ──
-    if len(posts_to_check) > 50:
+    # ── 안전장치: 한꺼번에 20개 이상이면 비정상 (커뮤니티 추가/코드 변경 등) → 자동 시드 ──
+    if len(posts_to_check) > 20:
         print(f"\n  🌱 자동 시드: 검사 대상이 {len(posts_to_check)}개로 비정상적으로 많습니다.")
         print(f"     (커뮤니티 추가 또는 코드 변경 감지)")
         print(f"     알림 없이 전부 확인 완료로 등록합니다.")
