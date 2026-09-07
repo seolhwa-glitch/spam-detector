@@ -357,9 +357,9 @@ def send_slack_alert(post, reason):
 import hashlib
 
 def _text_hash(post):
-    """제목+본문만 해시 (조회수/시간 등 메타데이터 변화에 영향 안 받음)"""
-    content = post.get("title", "") + " " + post.get("body", "")
-    return hashlib.md5(content.encode("utf-8")).hexdigest()[:12]
+    """제목만 해시 (조회수/시간/댓글수 변화에 영향 안 받음)"""
+    title = post.get("title", "")
+    return hashlib.md5(title.encode("utf-8")).hexdigest()[:12]
 
 def load_seen_posts():
     """seen_posts.json: {id: hash} 형태"""
