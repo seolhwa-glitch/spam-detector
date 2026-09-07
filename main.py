@@ -163,13 +163,7 @@ def fetch_post_comments(post_url):
 
     parser = CommentParser()
     parser.feed(html)
-    if parser.comments:
-        return parser.comments
-
-    # 폴백: HTML 태그 제거 후 전체 텍스트 반환
-    text_only = re.sub(r'<[^>]+>', ' ', html)
-    text_only = re.sub(r'\s+', ' ', text_only).strip()
-    return [text_only] if text_only else []
+    return parser.comments  # 구조적 추출 실패 시 빈 리스트 반환 (오탐 방지)
 
 
 def fetch_community_posts(community_id, community_name):
