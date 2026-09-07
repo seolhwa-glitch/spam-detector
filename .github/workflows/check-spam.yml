@@ -2,7 +2,7 @@ name: 스팸 감지
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -20,8 +20,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: seen_posts.json
-          key: seen-posts-${{ github.run_id }}
-          restore-keys: seen-posts-
+          key: seen-posts-v2-${{ github.run_id }}
+          restore-keys: seen-posts-v2-
 
       - name: 스팸 감지 실행
         run: python main.py
