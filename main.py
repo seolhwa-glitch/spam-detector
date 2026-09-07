@@ -356,27 +356,20 @@ def send_slack_alert(post, reason):
 # ─────────────────────────────────────────────
 import hashlib
 
-RECHECK_SECONDS = 2 * 60 * 60  # 2시간 동안 재검사
-
 def _text_hash(post):
     """제목+본문만 해시 (조회수/시간 등 메타데이터 변화에 영향 안 받음)"""
     content = post.get("title", "") + " " + post.get("body", "")
     return hashlib.md5(content.encode("utf-8")).hexdigest()[:12]
 
-def _now():
-    return int(time.time())
-
 def load_seen_posts():
-    """seen_posts.json: {id: {"hash": "...", "time": 타임스탬프}}"""
+    """seen_posts.json: {id: hash} 형태"""
     if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE, "r") as f:
             data = json.load(f)
-        # 기존 형식(list) 호환
         if isinstance(data, list):
-            return {str(pid): {"hash": "", "time": 0} for pid in data}
-        # 기존 형식(dict with string values) 호환
-        if data and isinstance(list(data.values())[0], str):
-            return {pid: {"hash": h, "time": 0} for pid, h in data.items()}
+            return {str(pid): "" for pid in data}
+        if data and isinstance(list(data.values())[0], dict):
+            return {pid: entry.get("hash", "") for pid, entry in data.items()}
         return data
     return {}
 
@@ -393,7 +386,7 @@ def save_seen_posts(seen):
 def main():
     print("🔍 리멤버 커뮤니티 스팸 감지 시작...")
     print(f"  📌 관심사 {len(INTEREST_COMMUNITIES)}개 + 직무 {len(JOB_COMMUNITIES)}개 = {len(ALL_COMMUNITIES)}개")
-    print(f"  📌 검사: 글 본문 (2시간 내 수정 재검사)\n")
+    print(f"  📌 검사: 글 본문 (수정 감지 포함)\n")
 
     seen = load_seen_posts()
     print(f"  📋 기존 확인한 글: {len(seen)}개\n")
@@ -401,7 +394,15 @@ def main():
     all_posts = fetch_all_posts()
     print(f"\n  📊 총 수집: {len(all_posts)}개")
 
-    now = _now()
+    # ── 시드 모드: seen이 비어있으면 현재 글을 전부 등록만 하고 종료 ──
+    if not seen:
+        for p in all_posts:
+            seen[p["id"]] = _text_hash(p)
+        save_seen_posts(seen)
+        print(f"\n  🌱 시드 모드: {len(all_posts)}개 글을 확인 완료로 등록했습니다.")
+        print(f"     다음 실행부터 새로 올라오는 글만 검사합니다.")
+        return
+
     posts_to_check = []
     for p in all_posts:
         pid = p["id"]
@@ -410,11 +411,20 @@ def main():
         if pid not in seen:
             p["_check_type"] = "신규"
             posts_to_check.append(p)
-        else:
-            entry = seen[pid]
-            if entry.get("hash", "") != current_hash:
-                p["_check_type"] = "수정됨"
-                posts_to_check.append(p)
+        elif seen[pid] != current_hash:
+            p["_check_type"] = "수정됨"
+            posts_to_check.append(p)
+
+    # ── 안전장치: 한꺼번에 50개 이상이면 비정상 (커뮤니티 추가/코드 변경 등) → 자동 시드 ──
+    if len(posts_to_check) > 50:
+        print(f"\n  🌱 자동 시드: 검사 대상이 {len(posts_to_check)}개로 비정상적으로 많습니다.")
+        print(f"     (커뮤니티 추가 또는 코드 변경 감지)")
+        print(f"     알림 없이 전부 확인 완료로 등록합니다.")
+        for p in all_posts:
+            seen[p["id"]] = _text_hash(p)
+        save_seen_posts(seen)
+        print(f"     다음 실행부터 새로 올라오는 글만 검사합니다.")
+        return
 
     new_count = sum(1 for p in posts_to_check if p["_check_type"] == "신규")
     edit_count = sum(1 for p in posts_to_check if p["_check_type"] == "수정됨")
@@ -430,7 +440,6 @@ def main():
     for post in posts_to_check:
         community = post.get("community", "")
         check_type = post["_check_type"]
-        current_hash = _text_hash(post)
         pid = post["id"]
 
         result = check_spam_keyword(post["text"])
@@ -444,8 +453,7 @@ def main():
             except Exception as e:
                 print(f"     ⚠️ 슬랙 오류: {e}")
 
-        first_time = seen.get(pid, {}).get("time", now)
-        seen[pid] = {"hash": current_hash, "time": first_time if check_type != "신규" else now}
+        seen[pid] = _text_hash(post)
 
     save_seen_posts(seen)
     print(f"\n✅ 완료! 검사 {len(posts_to_check)}개 (신규 {new_count} / 수정 {edit_count}) → 스팸 {spam_count}개")
