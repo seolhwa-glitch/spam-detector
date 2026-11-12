@@ -191,7 +191,7 @@ SPAM_PROMPT = """당신은 직장인 커뮤니티 '리멤버'의 스팸/가이�
 """
 
 
-MAX_POSTS_PER_RUN = 10  # 한 번에 최대 10개만 검사 (API 부담 방지)
+MAX_POSTS_PER_RUN = 50  # 한 번에 최대 50개 검사 (유료 전환으로 여유)
 
 def check_spam_llm(post):
     """Gemini API를 호출하여 스팸 여부를 판별합니다. 429 에러 시 1회 재시도."""
@@ -226,8 +226,8 @@ def check_spam_llm(post):
 
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt == 0:
-                print(f"     ⏳ 429 에러, 30초 대기 후 재시도...")
-                time.sleep(30)
+                print(f"     ⏳ 429 에러, 10초 대기 후 재시도...")
+                time.sleep(10)
                 continue
             raise
 
@@ -328,8 +328,8 @@ def main():
             p["_check_type"] = "수정됨"
             posts_to_check.append(p)
 
-    # ── 자동 시드 안전장치 ──
-    if len(posts_to_check) > 20:
+    # ── 자동 시드 안전장치 (커뮤니티 추가 등 비정상 상황만) ──
+    if len(posts_to_check) > 100:
         print(f"\n  🌱 자동 시드: 검사 대상이 {len(posts_to_check)}개로 비정상적으로 많습니다.")
         for p in all_posts:
             seen[p["id"]] = _text_hash(p)
@@ -377,7 +377,7 @@ def main():
             # LLM 검사 실패 → seen에 추가하지 않음 (다음 실행에서 재시도)
             print(f"  ⚠️ [{community}] LLM 오류 (다음 실행에서 재시도): {e}")
 
-        time.sleep(5)  # API 호출 간격 (무료 티어 분당 15회 제한 보호)
+        time.sleep(2)  # API 호출 간격
 
     save_seen_posts(seen)
     print(f"\n✅ 완료! 검사 {len(posts_to_check)}개 (신규 {new_count} / 수정 {edit_count}) → 스팸 {spam_count}개")
