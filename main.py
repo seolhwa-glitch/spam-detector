@@ -213,7 +213,7 @@ def check_spam_llm(post):
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     text = data["candidates"][0]["content"]["parts"][0]["text"]
