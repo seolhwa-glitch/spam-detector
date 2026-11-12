@@ -1,8 +1,6 @@
 name: 스팸 감지
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
