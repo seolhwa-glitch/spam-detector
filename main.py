@@ -191,8 +191,10 @@ SPAM_PROMPT = """당신은 직장인 커뮤니티 '리멤버'의 스팸/가이�
 """
 
 
+MAX_POSTS_PER_RUN = 10  # 한 번에 최대 10개만 검사 (API 부담 방지)
+
 def check_spam_llm(post):
-    """Gemini API를 호출하여 스팸 여부를 판별합니다."""
+    """Gemini API를 호출하여 스팸 여부를 판별합니다. 429 에러 시 1회 재시도."""
     title = post.get("title", "")
     body = post.get("body", "") or post.get("text", "")
     prompt = SPAM_PROMPT.replace("{title}", title).replace("{body}", body)
@@ -207,18 +209,29 @@ def check_spam_llm(post):
         "generationConfig": {"maxOutputTokens": 256},
     }).encode("utf-8")
 
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    # 최대 2회 시도 (429 에러 시 30초 대기 후 재시도)
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
 
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            text = re.sub(r"```json\s*|```", "", text).strip()
+            return json.loads(text)
 
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    text = re.sub(r"```json\s*|```", "", text).strip()
-    return json.loads(text)
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                print(f"     ⏳ 429 에러, 30초 대기 후 재시도...")
+                time.sleep(30)
+                continue
+            raise
+
+    raise Exception("API 재시도 실패")
 
 
 # ─────────────────────────────────────────────
@@ -334,6 +347,11 @@ def main():
         save_seen_posts(seen)
         return
 
+    # 한 번에 최대 MAX_POSTS_PER_RUN개만 검사 (나머지는 다음 실행에서)
+    if len(posts_to_check) > MAX_POSTS_PER_RUN:
+        print(f"  ⚠️ {len(posts_to_check)}개 중 {MAX_POSTS_PER_RUN}개만 검사 (나머지는 다음 실행)")
+        posts_to_check = posts_to_check[:MAX_POSTS_PER_RUN]
+
     spam_count = 0
     for post in posts_to_check:
         community = post.get("community", "")
@@ -359,7 +377,7 @@ def main():
             # LLM 검사 실패 → seen에 추가하지 않음 (다음 실행에서 재시도)
             print(f"  ⚠️ [{community}] LLM 오류 (다음 실행에서 재시도): {e}")
 
-        time.sleep(1)  # API 호출 간격
+        time.sleep(5)  # API 호출 간격 (무료 티어 분당 15회 제한 보호)
 
     save_seen_posts(seen)
     print(f"\n✅ 완료! 검사 {len(posts_to_check)}개 (신규 {new_count} / 수정 {edit_count}) → 스팸 {spam_count}개")
